@@ -1,13 +1,15 @@
 [package]
 name = "my_bevy_game"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"  # Changed from 2024 to 2021
 
+# Enable some optimization in debug mode
 [profile.dev]
 opt-level = 1
 
+# Enable high optimizations for dependencies (including bevy)
 [profile.dev.package."*"]
 opt-level = 3
 
-bevy = { version = "0.15.3", features = ["dynamic_linking]}
-
+[dependencies]
+bevy = "0.13.0"  # Updated to latest stable version
