@@ -142,16 +142,16 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut images: Res
     // Setup platforms 
     spawn_platform(&mut commands, Vec2::new(0.0, -250.0), Vec2::new(800.0, 55.0));
     
-    spawn_platform(&mut commands, Vec2::new(0.0, 250.0), Vec2::new(800.0, 25.0));
+    spawn_platform(&mut commands, Vec2::new(0.0, 250.0), Vec2::new(800.0, 20.0));
     
-    spawn_platform(&mut commands, Vec2::new(-300.0, -150.0), Vec2::new(200.0, 49.0));
-    spawn_platform(&mut commands, Vec2::new(5.0, -168.0), Vec2::new(200.0, 45.0));
-    spawn_platform(&mut commands, Vec2::new(300.0, -155.0), Vec2::new(200.0, 40.0));
+    spawn_platform(&mut commands, Vec2::new(-300.0, -160.0), Vec2::new(200.0, 35.0));
+    spawn_platform(&mut commands, Vec2::new(5.0, -168.0), Vec2::new(200.0, 40.0));
+    spawn_platform(&mut commands, Vec2::new(300.0, -165.0), Vec2::new(200.0, 35.0));
     
     spawn_platform(&mut commands, Vec2::new(0.0, -90.0), Vec2::new(500.0, 40.0));
     
-    spawn_platform(&mut commands, Vec2::new(-225.0, 5.0), Vec2::new(350.0, 40.0));
-    spawn_platform(&mut commands, Vec2::new(225.0, 5.0), Vec2::new(350.0, 40.0));
+    spawn_platform(&mut commands, Vec2::new(-225.0, 0.0), Vec2::new(350.0, 40.0));
+    spawn_platform(&mut commands, Vec2::new(225.0, 0.0), Vec2::new(350.0, 40.0));
     
     spawn_platform(&mut commands, Vec2::new(0.0, 80.0), Vec2::new(600.0, 40.0));
     
@@ -163,7 +163,6 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut images: Res
     wave_system.spawning = true; 
     commands.insert_resource(wave_system);
 }
-
 fn spawn_platform(commands: &mut Commands, position: Vec2, size: Vec2) {
     commands.spawn((
         SpriteBundle {
