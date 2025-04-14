@@ -1,5 +1,9 @@
-use bevy::prelude::*;
+use bevy::{prelude::*, transform};
 use crate::snowball::{Snowball, SnowballState};
+use crate::enemy;
+use crate::drinks;
+use crate::enemy::Enemy;
+use crate::enemy::EnemyState;
 
 #[derive(Component)]
 pub struct Player {
@@ -23,10 +27,21 @@ pub struct Player {
     pub push_frame: usize,
     pub snowball_collision: bool,
     pub collision_direction: Option<Vec2>, 
+    pub health: u8,
+    pub max_health: u8,
+    pub invincibility_timer: Timer, 
+    pub is_dead: bool,
+    pub lives: u8,
+    pub max_lives: u8,
 }
 
 #[derive(Component)]
 pub struct PowerIndicator;
+
+#[derive(Component)]
+pub struct HealthBar {
+    pub is_background: bool,
+}
 
 #[derive(Component)]
 pub struct Beam {
@@ -56,7 +71,51 @@ pub struct PlayerSprites {
     pub push_snow: Vec<Handle<Image>>,
     pub kick_snowball: Handle<Image>,
 }
-
+pub fn setup_health_bar(mut commands: Commands) {
+    
+    commands.spawn((
+        SpriteBundle {
+            sprite: Sprite {
+                color: Color::rgb(0.0, 0.8, 0.0),
+                custom_size: Some(Vec2::new(50.0, 5.0)),
+                ..default()
+            },
+            transform: Transform::from_xyz(0.0, 35.0, 1.6),
+            ..default()
+        },
+        HealthBar { is_background: false },
+    ));
+}
+pub fn update_health_bar(
+    mut param_set: ParamSet<(
+        Query<(&Player, &Transform)>,
+        Query<(&mut Transform, &mut Sprite, &HealthBar)>
+    )>,
+) {
+    let mut player_data: Option<(u8, u8, Vec3)> = None;
+    for (player, transform) in param_set.p0().iter() {
+        player_data = Some((player.health, player.max_health, transform.translation));
+        break;
+    }
+    
+    // update the health bars if player exists
+    if let Some((health, max_health, player_pos)) = player_data {
+        let health_ratio = health as f32 / max_health as f32;
+        
+        for (mut transform, mut sprite, health_bar) in param_set.p1().iter_mut() {
+            // Position the health bar above the player
+            transform.translation.x = player_pos.x;
+            transform.translation.y = player_pos.y + 35.0;
+            
+            // Update the green foreground bar width based on health
+            if !health_bar.is_background {
+                let base_width = 50.0;
+                sprite.anchor = bevy::sprite::Anchor::CenterLeft;
+                sprite.custom_size = Some(Vec2::new(base_width * health_ratio, 5.0));
+            }
+        }
+    }
+}
 pub fn setup_player(
     mut commands: Commands, 
     asset_server: &Res<AssetServer>, 
@@ -154,9 +213,16 @@ pub fn setup_player(
             push_frame: 0,
             snowball_collision: false,
             collision_direction: None,
+            health: 10,
+            max_health: 10,
+            invincibility_timer: Timer::from_seconds(1.0, TimerMode::Once),
+            is_dead: false,
+            lives: 3,
+            max_lives: 3,
         },
     ));
 }
+
 
 pub fn spawn_beam(
     commands: &mut Commands, 
@@ -261,7 +327,67 @@ pub fn draw_power_indicator(
         }
     }
 }
-
+pub fn handle_player_enemy_collision(
+    time: Res<Time>,
+    mut player_query: Query<(&mut Player, &Transform, &mut Sprite)>,
+    enemy_query: Query<(&Enemy, &Transform)>,
+) {
+    if let Ok((mut player, player_transform, mut player_sprite)) = player_query.get_single_mut() {
+        // Skip collision checks if player is dead
+        if player.is_dead {
+            return;
+        }
+        
+        player.invincibility_timer.tick(time.delta());
+        
+        if !player.invincibility_timer.finished() {
+            // Make player flash when invincible
+            let flash_speed = 10.0;
+            let alpha = (time.elapsed_seconds() * flash_speed).sin() * 0.5 + 0.5;
+            player_sprite.color.set_a(alpha);
+            return;
+        }
+        
+        // Reset alpha if not invincible
+        player_sprite.color.set_a(1.0);
+        
+        // Check for collisions with enemies
+        let player_size = Vec2::new(40.0, 50.0);
+        let player_left = player_transform.translation.x - player_size.x / 2.0;
+        let player_right = player_transform.translation.x + player_size.x / 2.0;
+        let player_top = player_transform.translation.y + player_size.y / 2.0;
+        let player_bottom = player_transform.translation.y - player_size.y / 2.0;
+        
+        for (enemy, enemy_transform) in enemy_query.iter() {
+            // Skip dying enemies
+            if enemy.state == EnemyState::Dying || enemy.is_dying {
+                continue;
+            }
+            
+            let enemy_size = Vec2::new(50.0, 50.0);
+            let enemy_left = enemy_transform.translation.x - enemy_size.x / 2.0;
+            let enemy_right = enemy_transform.translation.x + enemy_size.x / 2.0;
+            let enemy_top = enemy_transform.translation.y + enemy_size.y / 2.0;
+            let enemy_bottom = enemy_transform.translation.y - enemy_size.y / 2.0;
+            
+            if player_right > enemy_left && player_left < enemy_right &&
+               player_top > enemy_bottom && player_bottom < enemy_top {
+                // Collision detected, reduce health by enemy damage amount
+                player.health = player.health.saturating_sub(enemy.damage);
+                
+                // Start invincibility timer
+                player.invincibility_timer.reset();
+                
+                // Check if player died
+                if player.health == 0 {
+                    player.is_dead = true;
+                }
+                
+                break; 
+            }
+        }
+    }
+}
 pub fn handle_attack(
     keyboard: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
@@ -343,9 +469,9 @@ pub fn handle_attack(
 pub fn player_movement(
     keyboard: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
-    mut query: Query<(&mut crate::Velocity, &mut Player)>,
+    mut query: Query<(&mut crate::Velocity, &mut Player, &mut Transform)>,
 ) {
-    if let Ok((mut velocity, mut player)) = query.get_single_mut() {
+    if let Ok((mut velocity, mut player, mut transform)) = query.get_single_mut() {
         let mut direction = 0.0;
         player.is_moving = false;
         
@@ -374,12 +500,18 @@ pub fn player_movement(
             }
         }
         
-        if keyboard.just_pressed(KeyCode::KeyS) || keyboard.just_pressed(KeyCode::ArrowDown) {
-            if player.on_ground {
-                player.is_dropping = true;
-                player.on_ground = false;
-                velocity.value.y = -5.0;
-            }
+        // Base platform y position
+        let base_platform_y = -250.0;
+        
+        // Check if player is currently on or below the base platform
+        let on_or_below_base = transform.translation.y - 25.0 <= base_platform_y + 5.0;
+        
+        // Only allow dropping if NOT on or below the base platform
+        if (keyboard.just_pressed(KeyCode::KeyS) || keyboard.just_pressed(KeyCode::ArrowDown)) && 
+           player.on_ground && !on_or_below_base {
+            player.is_dropping = true;
+            player.on_ground = false;
+            velocity.value.y = -5.0;
         }
         
         if keyboard.pressed(KeyCode::KeyA) || keyboard.pressed(KeyCode::ArrowLeft) {
@@ -405,8 +537,35 @@ pub fn player_movement(
             player.on_ground = false;
             player.animation_frame = 0;
         }
+        
+        let screen_bounds = Vec2::new(380.0, 280.0);
+        
+        if transform.translation.x < -screen_bounds.x {
+            transform.translation.x = -screen_bounds.x;
+            velocity.value.x = 0.0;
+        } else if transform.translation.x > screen_bounds.x {
+            transform.translation.x = screen_bounds.x;
+            velocity.value.x = 0.0;
+        }
+        
+        if transform.translation.y < -screen_bounds.y || transform.translation.y - 25.0 < base_platform_y {
+            let respawn_x = if transform.translation.x < 0.0 { -200.0 } else { 200.0 };
+            
+            // Respawn above the base platform
+            transform.translation = Vec3::new(respawn_x, 100.0, 1.0);
+            velocity.value = Vec2::ZERO;
+            player.on_ground = false;
+            player.is_dropping = false;
+            
+            // Give temporary invincibility to prevent immediate collisions
+            player.invincibility_timer.reset();
+        } else if transform.translation.y > screen_bounds.y {
+            transform.translation.y = screen_bounds.y;
+            velocity.value.y = 0.0;
+        }
     }
 }
+
 
 pub fn update_beams(
     time: Res<Time>,
@@ -459,14 +618,26 @@ pub fn update_beams(
 
 pub fn animate_sprite(
     time: Res<Time>,
-    mut query: Query<&mut Player>,
+    mut query: Query<(&mut Player, Option<&drinks::PowerUpEffect>)>,
 ) {
-    if let Ok(mut player) = query.get_single_mut() {
+    if let Ok((mut player, power_up)) = query.get_single_mut() {
         if player.is_attacking || player.pushing_snowball || player.kicking_snowball {
             return;
         }
         
-        player.animation_timer.tick(time.delta());
+        // Check if the player has a speed boost effect
+        let animation_speed_multiplier = if let Some(power_up) = power_up {
+            if power_up.effect_type == drinks::PowerUpType::SpeedBoost && power_up.active {
+                // Animate faster when speed boost is active
+                2.0
+            } else {
+                1.0
+            }
+        } else {
+            1.0
+        };
+        
+        player.animation_timer.tick(time.delta().mul_f32(animation_speed_multiplier));
         
         if player.is_jumping {
             if player.animation_timer.just_finished() {
@@ -481,16 +652,58 @@ pub fn animate_sprite(
                 player.animation_frame = (player.animation_frame + 1) % 3;
             }
         } else {
-            player.animation_frame = 0;
+            // For idle animation during speed boost, cycle between frames
+            if power_up.is_some() && power_up.unwrap().effect_type == drinks::PowerUpType::SpeedBoost {
+                if player.animation_timer.just_finished() {
+                    player.animation_frame = (player.animation_frame + 1) % 2;
+                }
+            } else {
+                player.animation_frame = 0;
+            }
         }
     }
 }
 
 pub fn update_sprite(
     player_sprites: Res<PlayerSprites>,
-    mut query: Query<(&Player, &mut Handle<Image>, &mut Sprite)>,
+    red_power_sprites: Option<Res<drinks::RedPowerSprites>>,
+    mut query: Query<(&Player, &mut Handle<Image>, &mut Sprite, Option<&drinks::PowerUpEffect>)>,
 ) {
-    if let Ok((player, mut texture, mut sprite)) = query.get_single_mut() {
+    if let Ok((player, mut texture, mut sprite, power_up)) = query.get_single_mut() {
+        // Check if the player has a speed boost effect
+        if let Some(power_up) = power_up {
+            if power_up.effect_type == drinks::PowerUpType::SpeedBoost && power_up.active {
+                // Get red power sprites resource
+                if let Some(red_sprites) = &red_power_sprites {
+                    // Use red power-up sprites based on player state
+                    if player.pushing_snowball {
+                        let push_index = player.push_frame % player_sprites.push_snow.len();
+                        *texture = player_sprites.push_snow[push_index].clone();
+                    } else if player.kicking_snowball {
+                        *texture = player_sprites.kick_snowball.clone();
+                    } else if player.is_attacking {
+                        let attack_index = player.attack_frame % player_sprites.attack.len();
+                        *texture = player_sprites.attack[attack_index].clone();
+                    } else if player.is_jumping || player.is_dropping {
+                        let jump_index = player.animation_frame % player_sprites.jump.len();
+                        *texture = player_sprites.jump[jump_index].clone();
+                    } else if player.is_moving {
+                        // Use red walk sprites
+                        let walk_index = player.animation_frame % red_sprites.walk.len();
+                        *texture = red_sprites.walk[walk_index].clone();
+                    } else {
+                        // Use red idle sprites
+                        let idle_index = player.animation_frame % red_sprites.idle.len();
+                        *texture = red_sprites.idle[idle_index].clone();
+                    }
+                    
+                    sprite.flip_x = !player.facing_right;
+                    sprite.color = Color::rgba(1.0, 1.0, 1.0, 1.0);
+                    return;
+                }
+            }
+        }
+        
         if player.pushing_snowball {
             let push_index = player.push_frame % player_sprites.push_snow.len();
             *texture = player_sprites.push_snow[push_index].clone();
@@ -510,11 +723,9 @@ pub fn update_sprite(
         }
         
         sprite.flip_x = !player.facing_right;
-        
         sprite.color = Color::rgba(1.0, 1.0, 1.0, 1.0);
     }
 }
-
 pub fn handle_snowball_interaction(
     keyboard: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
@@ -551,7 +762,8 @@ pub fn handle_snowball_interaction(
                         
                         let kick_direction = if player.facing_right { -1.0 } else { 1.0 };
                         
-                        snowball.state = SnowballState::Rolling;
+                        snowball.state = SnowballState::Kicked;
+                        snowball.kicked = true;
                         
                         let kick_speed = 350.0 + (50.0 * snowball.snow_level as f32);
                         snowball_velocity.value.x = kick_direction * kick_speed;
@@ -585,11 +797,17 @@ pub fn handle_snowball_interaction(
                     
                     let kick_direction = if snowball_transform.translation.x > player_transform.translation.x { 1.0 } else { -1.0 };
                     
-                    snowball.state = SnowballState::Rolling;
+                    snowball.state = SnowballState::Kicked;
+                    snowball.kicked = true;
+                    snowball.roll_timer = Timer::from_seconds(0.05, TimerMode::Repeating); 
                     
-                    let kick_speed = 350.0 + (50.0 * snowball.snow_level as f32);
+                    // Calculate if the ball should go left or right based on kick direction
+                    let kick_direction = if player.facing_right { -1.0 } else { 1.0 };
+                    
+                    // Give a strong horizontal kick with minimal upward momentum
+                    let kick_speed = 400.0 + (50.0 * snowball.snow_level as f32);
                     snowball_velocity.value.x = kick_direction * kick_speed;
-                    snowball_velocity.value.y = 100.0; 
+                    snowball_velocity.value.y = 50.0; 
                     
                     return;
                 }
@@ -642,7 +860,6 @@ pub fn detect_player_snowball_collision(
         
         player.snowball_collision = false;
         player.collision_direction = None;
-        
         let player_size = Vec2::new(40.0, 50.0);
         let player_left = player_transform.translation.x - player_size.x / 2.0;
         let player_right = player_transform.translation.x + player_size.x / 2.0;
@@ -693,6 +910,267 @@ pub fn detect_player_snowball_collision(
                 }
                 
                 break;
+            }
+        }
+    }
+}
+
+#[derive(Component)]
+pub struct HealthHeart {
+    pub index: u8,
+}
+
+pub fn setup_health_display(mut commands: Commands, asset_server: Res<AssetServer>) {
+    // Create heart sprites for each health point
+    for i in 0..10 {
+        commands.spawn((
+            SpriteBundle {
+                texture: asset_server.load("heart_full.png"), // You'll need this asset
+                transform: Transform::from_xyz(-350.0 + (i as f32 * 25.0), 280.0, 10.0),
+                sprite: Sprite {
+                    custom_size: Some(Vec2::new(20.0, 20.0)),
+                    ..default()
+                },
+                ..default()
+            },
+            HealthHeart { index: i },
+        ));
+    }
+}
+
+pub fn update_health_display(
+    player_query: Query<&Player>,
+    mut heart_query: Query<(&mut Sprite, &HealthHeart)>,
+    _asset_server: Res<AssetServer>,
+) {
+    if let Ok(player) = player_query.get_single() {
+        for (mut sprite, heart) in heart_query.iter_mut() {
+            if heart.index < player.health {
+                sprite.color = Color::rgba(1.0, 1.0, 1.0, 1.0); // Visible
+            } else {
+                sprite.color = Color::rgba(1.0, 1.0, 1.0, 0.3); // Faded
+            }
+        }
+    }
+}
+
+#[derive(Component)]
+pub struct GameOverText;
+
+
+pub fn handle_player_death(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut player_query: Query<(Entity, &mut Player, &Transform, &mut Handle<Image>)>,
+    game_over_query: Query<Entity, With<GameOverText>>,
+    asset_server: Res<AssetServer>,
+    mut death_timer: Local<Option<Timer>>,
+    mut respawn_timer: Local<Option<Timer>>,
+    mut animation_frame: Local<usize>,
+    mut wave_system: ResMut<enemy::WaveSystem>,
+) {
+    // Initialize timers if needed
+    if death_timer.is_none() {
+        *death_timer = Some(Timer::from_seconds(0.2, TimerMode::Repeating));
+    }
+    
+    if respawn_timer.is_none() {
+        *respawn_timer = Some(Timer::from_seconds(2.0, TimerMode::Once));
+    }
+    
+    // Handle existing player
+    let player_exists = !player_query.is_empty();
+    
+    if player_exists {
+        // Get the player entity - we'll loop through to handle potential multiple players
+        for (entity, mut player, _transform, mut texture) in player_query.iter_mut() {
+            if player.is_dead {
+                // Death animation sequence
+                let timer = death_timer.as_mut().unwrap();
+                timer.tick(time.delta());
+                
+                if timer.just_finished() {
+                    *animation_frame += 1;
+                    
+                    match *animation_frame {
+                        1 => {
+                            *texture = asset_server.load("player_death_first.png");
+                        },
+                        2 => {
+                            *texture = asset_server.load("player_death_second.png");
+                        },
+                        3 => {
+                            *texture = asset_server.load("player_death_third.png");
+                        },
+                        4 => {
+                            // Decrease lives 
+                            println!("Player died! Lives before: {}", player.lives);
+                            player.lives = player.lives.saturating_sub(1);
+                            println!("Lives after: {}", player.lives);
+                            
+                            // Despawn player
+                            commands.entity(entity).despawn();
+                            
+                            // Set respawn timer based on lives
+                            let respawn_time = if player.lives > 0 { 2.0 } else { 4.0 };
+                            *respawn_timer = Some(Timer::from_seconds(respawn_time, TimerMode::Once));
+                            *animation_frame = 0;
+                            
+                            // If game over, spawn game over text
+                            if player.lives == 0 {
+                                commands.spawn((
+                                    Text2dBundle {
+                                        text: Text::from_section(
+                                            "GAME OVER",
+                                            TextStyle {
+                                                font_size: 64.0,
+                                                color: Color::RED,
+                                                ..default()
+                                            },
+                                        ),
+                                        transform: Transform::from_xyz(0.0, 0.0, 10.0),
+                                        ..default()
+                                    },
+                                    GameOverText,
+                                ));
+                                
+                                // Only reset wave when player is completely out of lives
+                                wave_system.current_wave = 0;
+                                wave_system.spawn_timer.reset();
+                                wave_system.spawning = true;
+                            }
+                        },
+                        _ => {}
+                    }
+                }
+            }
+        }
+    } else {
+        // Player doesn't exist, check if it's time to respawn
+        if let Some(timer) = respawn_timer.as_mut() {
+            timer.tick(time.delta());
+            
+            if timer.finished() {
+                // Check if we need to reset after game over
+                let mut game_over = false;
+                
+                for entity in game_over_query.iter() {
+                    // Game over text exists
+                    commands.entity(entity).despawn();
+                    game_over = true;
+                }
+                
+                let new_lives = if game_over {
+                    3 // Full reset after game over
+                } else {
+                    for (_entity, player, _, _) in player_query.iter() {
+                        if player.lives == 0 {
+                            return;
+                        }
+                    }
+                    1 
+                };
+                
+                println!("Respawning player with {} lives", new_lives);
+                
+                commands.spawn((
+                    SpriteBundle {
+                        texture: asset_server.load("player_appear_first.png"),
+                        transform: Transform::from_xyz(0.0, 100.0, 1.0),
+                        sprite: Sprite {
+                            custom_size: Some(Vec2::new(50.0, 50.0)),
+                            color: Color::rgba(1.0, 1.0, 1.0, 1.0),
+                            ..default()
+                        },
+                        ..default()
+                    },
+                    crate::Velocity { value: Vec2::new(0.0, 0.0) },
+                    crate::Gravity,
+                    Player { 
+                        facing_right: true,
+                        is_moving: false,
+                        is_jumping: false,
+                        on_ground: true,
+                        is_dropping: false,
+                        is_attacking: false,
+                        attack_timer: Timer::from_seconds(0.3, TimerMode::Once),
+                        attack_frame: 0,
+                        drop_timer: Timer::from_seconds(0.2, TimerMode::Once),
+                        animation_timer: Timer::from_seconds(0.15, TimerMode::Repeating),
+                        animation_frame: 0,
+                        x_button_held: false,
+                        x_button_hold_time: 0.0,
+                        max_hold_time: 1.5,
+                        pushing_snowball: false,
+                        kicking_snowball: false,
+                        push_timer: Timer::from_seconds(0.4, TimerMode::Once),
+                        push_frame: 0,
+                        snowball_collision: false,
+                        collision_direction: None,
+                        health: 10,
+                        max_health: 10,
+                        invincibility_timer: Timer::from_seconds(6.0, TimerMode::Once), // 6 seconds of invincibility
+                        is_dead: false,
+                        lives: new_lives,
+                        max_lives: 3,
+                    },
+                ));
+                
+                // Reset the respawn timer and animation frame
+                *timer = Timer::from_seconds(0.2, TimerMode::Repeating);
+                *animation_frame = 1; // Start the appear animation
+            }
+        }
+    }
+    
+    // Handle respawn animation for existing player
+    if player_exists {
+        let mut found_alive_player = false;
+        
+        for (_entity, player, _, mut texture) in player_query.iter_mut() {
+            if !player.is_dead {
+                found_alive_player = true;
+                
+                // Handle respawn animation if needed
+                if let Some(timer) = respawn_timer.as_mut() {
+                    if !timer.finished() {
+                        timer.tick(time.delta());
+                        
+                        if timer.just_finished() {
+                            match *animation_frame {
+                                1 => {
+                                    *texture = asset_server.load("player_appear_first.png");
+                                    *animation_frame += 1;
+                                },
+                                2 => {
+                                    *texture = asset_server.load("player_appear_second.png");
+                                    *animation_frame += 1;
+                                },
+                                3 => {
+                                    *texture = asset_server.load("player_appear_third.png");
+                                    *animation_frame += 1;
+                                },
+                                4 => {
+                                    *texture = asset_server.load("player_appear_fourth.png");
+                                    *animation_frame += 1;
+                                },
+                                5 => {
+                                    *texture = asset_server.load("player_appear_fifth.png");
+                                    *animation_frame = 0;
+                                    *respawn_timer = None;
+                                },
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Clean up any "Game Over" text if the player is alive
+        if found_alive_player {
+            for entity in game_over_query.iter() {
+                commands.entity(entity).despawn();
             }
         }
     }
