@@ -158,7 +158,8 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut images: Res
     spawn_platform(&mut commands, Vec2::new(0.0, 100.0), Vec2::new(400.0, 60.0));
     
     spawn_blocking_platform(&mut commands, Vec2::new(0.0, 120.0), Vec2::new(400.0, 40.0));
-
+ 
+ 
     let mut wave_system = enemy::WaveSystem::default();
     wave_system.spawning = true; 
     commands.insert_resource(wave_system);
